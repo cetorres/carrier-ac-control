@@ -1,0 +1,14 @@
+// Signing settings shared by everyone who builds CarrierBar.
+//
+// To sign with your own Apple developer team, create Config/Signing.local.xcconfig next to
+// this file. Git ignores it. For example:
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   PRODUCT_BUNDLE_IDENTIFIER = com.example.CarrierBar
+//
+// Without it, Xcode signs the app to run locally on your Mac.
+
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = com.cetorres.CarrierBar
+
+#include? "Signing.local.xcconfig"

@@ -1,0 +1,114 @@
+# CarrierBar
+
+A macOS menu bar app that shows the current temperature of each Carrier unit on your account. Clicking it opens a panel with details for each unit.
+
+> CarrierBar is an independent project. It is not affiliated with, endorsed by, or supported by Carrier. It talks to the same private cloud API as Carrier's own apps, which can change at any time. Use it only with your own account. See [Disclaimer](#disclaimer).
+
+## Requirements
+
+- macOS 14 or later
+- Xcode 16 or later (the project uses synchronized folders, a project format introduced in Xcode 16)
+- The Carrier account you use in the Carrier SmartHome app
+
+## Run it
+
+1. Open `CarrierBar.xcodeproj`.
+2. Optional: to sign with your own Apple developer team, create `Config/Signing.local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>`, and if you like `PRODUCT_BUNDLE_IDENTIFIER = <your bundle ID>`. Git ignores this file. Without it the app signs to run locally, and macOS asks you to allow Keychain access again after each rebuild, because the ad hoc signature changes every time. Set signing this way rather than in the Signing & Capabilities tab, which writes your team ID into the shared project file.
+3. Press Run. A snowflake appears in the menu bar. Click it, sign in, and after the first fetch your temperatures appear next to it.
+
+The `CarrierBar` folder is synchronized with the project, so files you add, rename, or delete there in Finder show up in Xcode automatically.
+
+## Signing in
+
+The sign in panel offers three ways in.
+
+**Web.** Opens my.carrier.com in a CarrierBar window. Sign in there and the window picks up the portal's session and closes by itself. The window has its own cookies and storage, so it doesn't see a sign in from Safari or Chrome.
+
+**Token.** Reuses the session from a browser that's already signed in to my.carrier.com. On that page, open the JavaScript console and run:
+
+```js
+copy(localStorage.getItem('AUTH_DATA--1'))
+```
+
+Then paste into CarrierBar (the panel has a Paste from Clipboard button) and click Use Session. That entry holds both the access token and the refresh token, so CarrierBar can keep the session alive on its own. Close the browser tab afterwards without signing out, so the browser and CarrierBar don't take turns renewing the same session.
+
+The field also accepts a bare access token, `Bearer …`, or a whole `Authorization` header. Without a refresh token the session lasts only until that token expires (30 minutes), and then CarrierBar asks you to sign in again.
+
+In Safari, the console needs the Develop menu: Settings › Advanced › Show features for web developers. In Chrome it's View › Developer › JavaScript Console, and Chrome may ask you to type `allow pasting` before it accepts a pasted command.
+
+**Password.** Your Carrier account email and password, sent once to `assistedLogin` and never stored.
+
+## How it works
+
+**Sessions.** my.carrier.com keeps its session in localStorage under `AUTH_DATA--1`, in the same shape `assistedLogin` returns: a 30 minute access token and a refresh token, both issued by Carrier's Okta (`sso.carrier.com`) to the same client the Carrier apps use. Whichever way you sign in, CarrierBar keeps one Keychain item with the account email (read from the token's `sub` claim for web sessions), the tokens, and the token's expiry. Refresh tokens are only ever sent to `sso.carrier.com`.
+
+**Tokens.** Access tokens are renewed through Carrier's Okta token endpoint about a minute before they expire. If Okta rotates the refresh token, the new one replaces the old one in the Keychain. If renewal is rejected, the app signs out and asks you to sign in again.
+
+**Data.** The app runs both the `infinitySystems` and `entryLevelSystems` queries, so it works whether your units are Infinity systems or Carrier Smart Thermostats. Each enabled zone becomes one entry in the menu bar and the panel, sorted by name.
+
+**Live updates.** The app keeps Carrier's realtime websocket open. Status messages (temperature, humidity, setpoints, cooling or heating state) are merged into the current data right away. Other messages trigger one debounced refetch. A full fetch also runs every 5 minutes as a safety net, every minute while the websocket is down, and whenever the panel opens with data older than a minute. Waking from sleep reconnects and refreshes.
+
+**Tolerant decoding.** Carrier mixes `"74"`, `74`, `"on"`, and `"None"` for similar fields. Every scalar goes through `JSONScalar`, so one odd value never breaks a whole response.
+
+## Project layout
+
+| Path | What it holds |
+| --- | --- |
+| `App/CarrierBarApp.swift` | `MenuBarExtra` scene with the window style panel |
+| `App/ThermostatStore.swift` | Observable state: session, thermostats, refresh, realtime, polling |
+| `App/WebSignInWindowController.swift` | my.carrier.com window that picks up the portal's session |
+| `Carrier/CarrierClient.swift` | Actor that signs in, imports web sessions, renews tokens, and runs GraphQL queries |
+| `Carrier/TokenImport.swift` | Reads pasted sessions, headers, and tokens |
+| `Carrier/JWTClaims.swift` | Account, expiry, client, and issuer from an access token |
+| `Carrier/RealtimeListener.swift` | Websocket connection, keepalive, reconnect with backoff, message parsing |
+| `Carrier/CarrierDTOs.swift` | Wire formats for responses and realtime patches |
+| `Carrier/CarrierQueries.swift` | GraphQL documents |
+| `Model/Thermostat.swift` | One normalized unit, mapping from both system types, realtime merge |
+| `Support/KeychainStore.swift` | Session persistence |
+| `Views/` | Menu bar label, panel, unit card, sign in, web sign in window |
+
+Build settings worth knowing: the Info.plist is generated from build settings (`LSUIElement` is on, so there is no Dock icon), the app is sandboxed with outgoing network access only, the language mode is Swift 5 with minimal concurrency checking, and the default bundle ID is `com.cetorres.CarrierBar`. Signing and the bundle ID come from `Config/Signing.xcconfig`, which a git-ignored `Config/Signing.local.xcconfig` can override.
+
+## App icon
+
+The icon lives in `CarrierBar/Assets.xcassets/AppIcon.appiconset`, with every macOS size from 16 to 1024 px. The 16 and 32 px images use a simpler drawing with bolder strokes so they stay legible.
+
+Sources are in `Design/AppIcon`: the full icon as SVG and a 1024 px PNG, plus `layers/` with the background and glyph as separate, unmasked files for Icon Composer if you want a Liquid Glass version for macOS 26. To change colors or proportions, edit `make_icon.py` and run `python3 make_icon.py <output folder>` (it needs Playwright for Python).
+
+## Debugging
+
+Open Console.app and filter by the subsystem `com.cetorres.CarrierBar`. The `api` category logs HTTP and decoding problems. The `realtime` category logs every websocket message at debug level (turn on Action › Include Debug Messages), which is the easiest way to see what Carrier pushes when you change something in the iPhone app.
+
+If the panel says Carrier sent a response this app couldn't read, the `api` log shows the exact decoding error.
+
+Before attaching logs to an issue, remove serial numbers and account details. Websocket messages include your system's serial number. CarrierBar never logs passwords or tokens.
+
+## Security
+
+- Passwords are sent once to Carrier's sign in mutation and never stored.
+- Tokens live in a single item in your login Keychain, never in files or `UserDefaults`.
+- Refresh tokens are only sent to Carrier's authorization server, `sso.carrier.com`.
+- The app is sandboxed, with outgoing network access as its only entitlement.
+- The Okta client ID in `CarrierClient.swift` is the public identifier Carrier's own apps use. It is not a secret, and there is no client secret.
+
+Please report security problems through GitHub's private vulnerability reporting rather than in a public issue.
+
+## Roadmap
+
+- Controls: setpoint, mode, fan, hold and resume, using the `updateInfinityZoneActivity`, `updateInfinityConfig`, and `updateInfinityZoneConfig` mutations
+- Show a short name or icon next to each temperature in the menu bar, or choose which unit appears there
+- Launch at login with `SMAppService`
+
+## Acknowledgments
+
+The GraphQL operations, authentication flow, and realtime protocol follow [carrier_api](https://github.com/dahlb/carrier_api) by Bren Dahl, an MIT licensed Python client that also powers the [ha_carrier](https://github.com/dahlb/ha_carrier) Home Assistant integration.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Disclaimer
+
+CarrierBar is an independent, unofficial project. It is not affiliated with, endorsed by, sponsored by, or supported by Carrier Global Corporation or its subsidiaries. Carrier, Infinity, and other product names are trademarks of their respective owners and are used here only to describe compatibility.
+
+CarrierBar uses Carrier's private cloud API, which is undocumented and can change or stop working at any time. Use it only with your own account and at your own risk. The software is provided as is, without warranty of any kind.
