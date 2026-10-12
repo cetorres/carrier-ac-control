@@ -2,6 +2,10 @@
 
 A macOS menu bar app that shows the current temperature of each Carrier unit on your account. Clicking it opens a panel with details for each unit.
 
+<p align="center">
+  <img src="Design/Screenshots/panel.png" alt="CarrierBar in the menu bar with its panel open, showing two thermostats" width="420">
+</p>
+
 > CarrierBar is an independent project. It is not affiliated with, endorsed by, or supported by Carrier. It talks to the same private cloud API as Carrier's own apps, which can change at any time. Use it only with your own account. See [Disclaimer](#disclaimer).
 
 ## Requirements
@@ -17,6 +21,18 @@ A macOS menu bar app that shows the current temperature of each Carrier unit on 
 3. Press Run. A snowflake appears in the menu bar. Click it, sign in, and after the first fetch your temperatures appear next to it.
 
 The `CarrierBar` folder is synchronized with the project, so files you add, rename, or delete there in Finder show up in Xcode automatically.
+
+### Demo mode
+
+Choose the **CarrierBar Demo** scheme to run with two made-up units and no account. It passes the launch argument `-DemoMode YES`. Demo mode never touches your saved session and makes no network requests, which makes it handy for screenshots and for trying the interface.
+
+To refresh the screenshot above, run the demo scheme, then run this from the repository root and click the snowflake before the countdown ends:
+
+```bash
+swift Design/Screenshots/capture.swift
+```
+
+It captures only the menu bar item and the open panel, places them on a clean background, and saves `Design/Screenshots/panel.png`. Terminal needs Screen Recording permission the first time.
 
 ## Signing in
 

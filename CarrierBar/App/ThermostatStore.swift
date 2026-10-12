@@ -66,6 +66,10 @@ final class ThermostatStore {
     }
 
     private func bootstrap() async {
+        if isDemo {
+            loadDemo()
+            return
+        }
         guard let session = KeychainStore.load() else {
             phase = .signedOut
             return
@@ -79,26 +83,46 @@ final class ThermostatStore {
         }
     }
 
+    // MARK: - Demo mode
+
+    /// Shows sample data instead of a real account, for screenshots and for trying the app.
+    /// Turn it on with the launch argument `-DemoMode YES` (the "CarrierBar Demo" scheme does this).
+    /// Demo mode never reads, writes, or deletes the saved session, and makes no network requests.
+    private let isDemo = UserDefaults.standard.bool(forKey: "DemoMode")
+
+    private func loadDemo() {
+        thermostats = Thermostat.demoUnits
+        username = "demo@example.com"
+        lastUpdated = Date()
+        errorMessage = nil
+        isLive = true
+        phase = .signedIn
+    }
+
     // MARK: - Session
 
     func signIn(username: String, password: String) async throws {
+        if isDemo { return loadDemo() }
         try await client.signIn(username: username, password: password)
         try await activateSession()
     }
 
     /// Signs in with text pasted from a browser: the my.carrier.com session JSON or an access token.
     func signIn(sessionText: String) async throws {
+        if isDemo { return loadDemo() }
         let tokens = try TokenImport.parse(sessionText)
         try await signIn(tokens: tokens)
     }
 
     func signIn(tokens: TokenBundle) async throws {
+        if isDemo { return loadDemo() }
         try await client.importSession(tokens)
         try await activateSession()
     }
 
     /// Opens my.carrier.com in a window and signs in with its session as soon as one exists.
     func beginWebSignIn() {
+        if isDemo { return loadDemo() }
         webSignIn.show { [weak self] tokens in
             guard let self else { return }
             try await self.signIn(tokens: tokens)
@@ -133,13 +157,20 @@ final class ThermostatStore {
         username = nil
         errorMessage = message
         phase = .signedOut
-        await client.signOut()
+        // Demo mode has no session of its own, so leave any real one in the Keychain alone.
+        if !isDemo {
+            await client.signOut()
+        }
     }
 
     // MARK: - Refreshing
 
     func refresh() async {
         guard phase == .signedIn else { return }
+        if isDemo {
+            lastUpdated = Date()
+            return
+        }
         guard !isRefreshing else {
             // A refresh is already running. Run once more when it finishes so nothing is missed.
             refreshQueued = true
@@ -236,7 +267,7 @@ final class ThermostatStore {
     }
 
     private func handleWake() {
-        guard phase == .signedIn else { return }
+        guard phase == .signedIn, !isDemo else { return }
         Task {
             // Give the network a moment to come back after sleep.
             try? await Task.sleep(for: .seconds(5))
