@@ -3,7 +3,8 @@ import Foundation
 /// Client for Carrier's private cloud API, the same backend the Carrier SmartHome app and
 /// my.carrier.com use.
 ///
-/// Read only for now: get a session, keep its access token fresh, fetch thermostat status.
+/// Gets a session, keeps its access token fresh, fetches thermostat status, and changes
+/// setpoints.
 /// A session comes from a password sign in or from tokens taken from a my.carrier.com web session.
 /// It's kept in the Keychain. Passwords are never stored.
 actor CarrierClient {
@@ -172,6 +173,90 @@ actor CarrierClient {
 
         let sorted = thermostats.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         return Self.disambiguated(sorted)
+    }
+
+    // MARK: - Control
+
+    /// Holds a unit at new setpoints until they're changed again, like changing the temperature
+    /// on the thermostat itself.
+    func setSetpoints(of thermostat: Thermostat, heat: Double, cool: Double) async throws {
+        switch thermostat.kind {
+        case .infinity:
+            try await setInfinitySetpoints(
+                serial: thermostat.systemSerial,
+                zoneID: thermostat.zoneID,
+                heat: heat,
+                cool: cool,
+                fanMode: thermostat.fanMode
+            )
+        case .smartThermostat:
+            try await setEntryLevelSetpoints(
+                serial: thermostat.systemSerial,
+                index: Int(thermostat.zoneID) ?? 0,
+                heat: heat,
+                cool: cool
+            )
+        }
+    }
+
+    /// Infinity holds a zone in an activity: write the "manual" activity, then hold the zone in it.
+    private func setInfinitySetpoints(
+        serial: String,
+        zoneID: String,
+        heat: Double,
+        cool: Double,
+        fanMode: String?
+    ) async throws {
+        _ = try await graphQL(
+            "updateInfinityZoneActivity",
+            document: CarrierQueries.updateInfinityZoneActivity,
+            variables: InfinityZoneActivityVariables(input: .init(
+                serial: serial,
+                zoneId: zoneID,
+                activityType: "manual",
+                htsp: Self.setpointText(heat),
+                clsp: Self.setpointText(cool),
+                fan: fanMode
+            )),
+            as: InfinityMutationData.self
+        )
+        _ = try await graphQL(
+            "updateInfinityZoneConfig",
+            document: CarrierQueries.updateInfinityZoneConfig,
+            variables: InfinityZoneConfigVariables(input: .init(
+                serial: serial,
+                zoneId: zoneID,
+                hold: "on",
+                holdActivity: "manual",
+                otmr: nil
+            )),
+            as: InfinityMutationData.self
+        )
+    }
+
+    /// Smart Thermostats take both setpoints in one change. Turning the schedule off holds them.
+    private func setEntryLevelSetpoints(serial: String, index: Int, heat: Double, cool: Double) async throws {
+        let data = try await graphQL(
+            "updateEntryLevelZone",
+            document: CarrierQueries.updateEntryLevelZone,
+            variables: EntryLevelZoneVariables(input: .init(
+                serial: serial,
+                index: index,
+                clsp: .init(current: cool),
+                htsp: .init(current: heat),
+                scheduleEnabled: false
+            )),
+            as: EntryLevelZoneUpdateData.self
+        )
+        if data.updateEntryLevelZone?.success?.bool == false {
+            throw CarrierError.graphQL("Carrier didn't accept the new temperature.")
+        }
+    }
+
+    /// Infinity takes setpoints as text: whole degrees, or halves in Celsius.
+    private static func setpointText(_ value: Double) -> String {
+        let halves = (value * 2).rounded() / 2
+        return halves == halves.rounded() ? String(Int(halves)) : String(halves)
     }
 
     // MARK: - Tokens

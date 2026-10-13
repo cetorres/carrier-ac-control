@@ -52,6 +52,72 @@ struct Thermostat: Identifiable, Equatable, Sendable {
     var firmware: String?
     var indoorUnitStatus: String?
     var outdoorUnitStatus: String?
+    var usesCelsius: Bool = false
+}
+
+// MARK: - Setpoint changes
+
+extension Thermostat {
+    /// Whether this app can change the unit's setpoints: it's online and in a mode that has one.
+    var canAdjustSetpoints: Bool {
+        guard isOnline, heatSetpoint != nil, coolSetpoint != nil else { return false }
+        switch mode?.lowercased() {
+        case "heat"?, "cool"?, "auto"?:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Moves the setpoint the current mode uses by `steps` whole degrees, keeping the other one
+    /// far enough away that the system accepts the pair. In auto both move together.
+    /// Returns false when nothing changed, for example at the end of the allowed range.
+    @discardableResult
+    mutating func adjustSetpoints(by steps: Int) -> Bool {
+        guard canAdjustSetpoints, steps != 0, let heat = heatSetpoint, let cool = coolSetpoint else { return false }
+        let range: ClosedRange<Double> = usesCelsius ? 10...32 : 50...90
+        let deadband: Double = usesCelsius ? 1 : 2
+        let delta = Double(steps)
+
+        var newHeat = heat
+        var newCool = cool
+        switch mode?.lowercased() {
+        case "heat"?:
+            newHeat = (heat + delta).clamped(to: range.lowerBound...(range.upperBound - deadband))
+            newCool = max(cool, newHeat + deadband)
+        case "cool"?:
+            newCool = (cool + delta).clamped(to: (range.lowerBound + deadband)...range.upperBound)
+            newHeat = min(heat, newCool - deadband)
+        default:
+            // Shift the pair without letting either end leave the range.
+            let lowest = range.lowerBound - heat
+            let highest = range.upperBound - cool
+            guard lowest <= highest else { return false }
+            let shift = delta.clamped(to: lowest...highest)
+            newHeat = heat + shift
+            newCool = cool + shift
+        }
+
+        guard newHeat != heat || newCool != cool else { return false }
+        applyHeldSetpoints(heat: newHeat, cool: newCool)
+        return true
+    }
+
+    /// Shows the unit held at these setpoints, as it reports itself after a manual change.
+    mutating func applyHeldSetpoints(heat: Double, cool: Double) {
+        heatSetpoint = heat
+        coolSetpoint = cool
+        isOnHold = true
+        if kind == .infinity {
+            activity = "manual"
+        }
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }
 
 // MARK: - Mapping from the API
@@ -100,7 +166,8 @@ extension Thermostat {
                 model: system.profile?.model?.string,
                 firmware: system.profile?.firmware?.string,
                 indoorUnitStatus: status?.idu?.opstat?.string,
-                outdoorUnitStatus: status?.odu?.opstat?.string
+                outdoorUnitStatus: status?.odu?.opstat?.string,
+                usesCelsius: status?.cfgem?.string?.uppercased() == "C"
             )
         }
     }
@@ -134,7 +201,8 @@ extension Thermostat {
                 model: system.model?.string,
                 firmware: system.firmware?.string,
                 indoorUnitStatus: nil,
-                outdoorUnitStatus: nil
+                outdoorUnitStatus: nil,
+                usesCelsius: system.temperatureUnit?.string?.uppercased().hasPrefix("C") ?? false
             )
         }
     }

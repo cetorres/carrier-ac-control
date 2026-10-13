@@ -143,6 +143,34 @@ struct InfinitySystemDTO: Decodable {
     let config: Config?
 }
 
+struct InfinityZoneActivityVariables: Encodable {
+    struct Input: Encodable {
+        let serial: String
+        let zoneId: String
+        let activityType: String
+        let htsp: String
+        let clsp: String
+        let fan: String?
+    }
+
+    let input: Input
+}
+
+struct InfinityZoneConfigVariables: Encodable {
+    struct Input: Encodable {
+        let serial: String
+        let zoneId: String
+        let hold: String
+        let holdActivity: String
+        /// Hold until this time ("HH:MM"). Nil holds until the next change.
+        let otmr: String?
+    }
+
+    let input: Input
+}
+
+struct InfinityMutationData: Decodable {}
+
 /// Partial status pushed over the realtime websocket ("InfinityStatus" messages).
 /// Only the fields present in a message are set.
 struct InfinityStatusPatch: Decodable, Sendable {
@@ -214,3 +242,33 @@ struct EntryLevelSystemDTO: Decodable {
         case temperatureUnit = "temp_unit_format"
     }
 }
+struct EntryLevelZoneVariables: Encodable {
+    struct SetPoint: Encodable {
+        let current: Double
+    }
+
+    struct Input: Encodable {
+        let serial: String
+        let index: Int
+        let clsp: SetPoint
+        let htsp: SetPoint
+        /// False holds the zone at these setpoints instead of following the schedule.
+        let scheduleEnabled: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case serial, index, clsp, htsp
+            case scheduleEnabled = "schedule_enabled"
+        }
+    }
+
+    let input: Input
+}
+
+struct EntryLevelZoneUpdateData: Decodable {
+    struct Result: Decodable {
+        let success: JSONScalar?
+    }
+
+    let updateEntryLevelZone: Result?
+}
+

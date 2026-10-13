@@ -31,6 +31,15 @@ final class ThermostatStore {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var pendingRefresh: Task<Void, Never>?
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
+    @ObservationIgnored private var setpointEdits: [Thermostat.ID: SetpointEdit] = [:]
+    @ObservationIgnored private var setpointSends: [Thermostat.ID: Task<Void, Never>] = [:]
+
+    /// A setpoint change made here that Carrier may not report back yet.
+    private struct SetpointEdit: Equatable {
+        let heat: Double
+        let cool: Double
+        var sentAt: Date?
+    }
 
     /// Temperatures for the menu bar, in panel order. Nil until there is data to show.
     var menuBarTitle: String? {
@@ -152,6 +161,9 @@ final class ThermostatStore {
 
     private func signOut(message: String?) async {
         stopBackgroundUpdates()
+        setpointSends.values.forEach { $0.cancel() }
+        setpointSends = [:]
+        setpointEdits = [:]
         thermostats = []
         lastUpdated = nil
         username = nil
@@ -194,7 +206,7 @@ final class ThermostatStore {
 
     private func performRefresh() async {
         do {
-            thermostats = try await client.fetchThermostats()
+            thermostats = withSetpointEdits(try await client.fetchThermostats())
             lastUpdated = Date()
             errorMessage = nil
         } catch let error as CarrierError where error.isAuthFailure {
@@ -202,6 +214,74 @@ final class ThermostatStore {
         } catch {
             Log.store.error("Refresh failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Control
+
+    /// Nudges a unit's setpoint by whole degrees. The panel updates right away. The change is sent
+    /// once the taps pause, so several quick taps become a single request.
+    func adjustSetpoint(of id: Thermostat.ID, by steps: Int) {
+        guard phase == .signedIn, let index = thermostats.firstIndex(where: { $0.id == id }) else { return }
+        var thermostat = thermostats[index]
+        guard thermostat.adjustSetpoints(by: steps),
+              let heat = thermostat.heatSetpoint,
+              let cool = thermostat.coolSetpoint
+        else { return }
+        thermostats[index] = thermostat
+        if isDemo { return }
+
+        setpointEdits[id] = SetpointEdit(heat: heat, cool: cool)
+        setpointSends[id]?.cancel()
+        setpointSends[id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled, let self else { return }
+            self.setpointSends[id] = nil
+            await self.sendSetpoints(of: id)
+        }
+    }
+
+    private func sendSetpoints(of id: Thermostat.ID) async {
+        guard let edit = setpointEdits[id],
+              let thermostat = thermostats.first(where: { $0.id == id })
+        else { return }
+
+        do {
+            try await client.setSetpoints(of: thermostat, heat: edit.heat, cool: edit.cool)
+            // Keep showing the new values until Carrier reports them, which can take a little while.
+            if setpointEdits[id] == edit {
+                setpointEdits[id]?.sentAt = Date()
+            }
+            errorMessage = nil
+        } catch let error as CarrierError where error.isAuthFailure {
+            await signOut(message: error == .notSignedIn ? nil : error.errorDescription)
+            return
+        } catch {
+            Log.store.error("Setpoint change failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = "Couldn't change \(thermostat.name): \(error.localizedDescription)"
+            // Show what the unit is really set to, unless a newer change is already on its way.
+            if setpointEdits[id] == edit {
+                setpointEdits[id] = nil
+            }
+        }
+        scheduleRefresh()
+    }
+
+    /// Lays changes made here over fetched data until Carrier reports them, so the panel doesn't
+    /// jump back to the old setpoint while the system catches up.
+    private func withSetpointEdits(_ fetched: [Thermostat]) -> [Thermostat] {
+        guard !setpointEdits.isEmpty else { return fetched }
+        return fetched.map { thermostat in
+            guard let edit = setpointEdits[thermostat.id] else { return thermostat }
+            let confirmed = thermostat.heatSetpoint == edit.heat && thermostat.coolSetpoint == edit.cool
+            let expired = edit.sentAt.map { Date().timeIntervalSince($0) > 90 } ?? false
+            if confirmed || expired {
+                setpointEdits[thermostat.id] = nil
+                return thermostat
+            }
+            var copy = thermostat
+            copy.applyHeldSetpoints(heat: edit.heat, cool: edit.cool)
+            return copy
         }
     }
 
@@ -245,7 +325,7 @@ final class ThermostatStore {
                 matched = true
             }
             if matched {
-                thermostats = updated
+                thermostats = withSetpointEdits(updated)
                 lastUpdated = Date()
             } else {
                 scheduleRefresh()

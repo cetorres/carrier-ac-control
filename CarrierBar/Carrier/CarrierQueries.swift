@@ -65,6 +65,33 @@ enum CarrierQueries {
     }
     """
 
+    /// Sets the setpoints and fan of a zone's "manual" activity.
+    static let updateInfinityZoneActivity = """
+    mutation updateInfinityZoneActivity($input: InfinityZoneActivityInput!) {
+      updateInfinityZoneActivity(input: $input) {
+        etag
+      }
+    }
+    """
+
+    /// Puts a zone on hold in an activity, which is how the manual activity takes effect.
+    static let updateInfinityZoneConfig = """
+    mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
+      updateInfinityZoneConfig(input: $input) {
+        etag
+      }
+    }
+    """
+
+    /// Changes a Smart Thermostat zone. Carrier expects both setpoints together.
+    static let updateEntryLevelZone = """
+    mutation updateEntryLevelZone($input: EntryLevelZoneInput!) {
+      updateEntryLevelZone(input: $input) {
+        success
+      }
+    }
+    """
+
     static let entryLevelSystems = """
     query getEntryLevelSystems($username: String!) {
       entryLevelSystems(username: $username) {

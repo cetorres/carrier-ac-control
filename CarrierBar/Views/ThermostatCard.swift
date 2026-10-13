@@ -24,6 +24,8 @@ struct ThermostatCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if let target = thermostat.targetLine {
                         Label(target.text, systemImage: target.symbol)
+                            .contentTransition(.numericText())
+                            .animation(.smooth(duration: 0.2), value: target)
                     }
                     if let humidity = DisplayFormat.percent(thermostat.humidity) {
                         Label("\(humidity) humidity", systemImage: "humidity")
@@ -31,6 +33,11 @@ struct ThermostatCard: View {
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+                if thermostat.canAdjustSetpoints {
+                    Spacer(minLength: 0)
+                    SetpointButtons(thermostat: thermostat)
+                }
             }
 
             Divider()
@@ -79,6 +86,34 @@ private struct DetailRow: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+}
+
+/// Lowers or raises the setpoint the current mode uses, one degree per click.
+private struct SetpointButtons: View {
+    @Environment(ThermostatStore.self) private var store
+    let thermostat: Thermostat
+
+    var body: some View {
+        HStack(spacing: 6) {
+            button(steps: -1, symbol: "minus", help: "Lower the temperature")
+            button(steps: 1, symbol: "plus", help: "Raise the temperature")
+        }
+    }
+
+    private func button(steps: Int, symbol: String, help: String) -> some View {
+        Button {
+            store.adjustSetpoint(of: thermostat.id, by: steps)
+        } label: {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .frame(width: 28, height: 28)
+                .background(Color.primary.opacity(0.08), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
