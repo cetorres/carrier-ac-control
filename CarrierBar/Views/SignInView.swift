@@ -48,11 +48,10 @@ struct SignInView: View {
 
             Divider()
 
-            Button("Quit CarrierBar") {
-                NSApplication.shared.terminate(nil)
+            HStack {
+                Spacer()
+                PanelMenu()
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
         }
         .padding(14)
     }

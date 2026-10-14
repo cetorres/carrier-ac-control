@@ -8,4 +8,5 @@ enum Log {
     static let api = Logger(subsystem: subsystem, category: "api")
     static let realtime = Logger(subsystem: subsystem, category: "realtime")
     static let store = Logger(subsystem: subsystem, category: "store")
+    static let web = Logger(subsystem: subsystem, category: "web")
 }

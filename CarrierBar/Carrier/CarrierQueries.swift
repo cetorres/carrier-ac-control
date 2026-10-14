@@ -107,7 +107,16 @@ enum CarrierQueries {
     }
     """
 
-    /// Changes a Smart Thermostat zone. Carrier expects both setpoints together.
+    /// Changes system wide Infinity settings, like the mode.
+    static let updateInfinityConfig = """
+    mutation updateInfinityConfig($input: InfinityConfigInput!) {
+      updateInfinityConfig(input: $input) {
+        etag
+      }
+    }
+    """
+
+    /// Changes a Smart Thermostat zone. Setpoints go together; mode and fan can go on their own.
     static let updateEntryLevelZone = """
     mutation updateEntryLevelZone($input: EntryLevelZoneInput!) {
       updateEntryLevelZone(input: $input) {

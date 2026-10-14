@@ -197,13 +197,24 @@ struct InfinitySystemDTO: Decodable {
 }
 
 struct InfinityZoneActivityVariables: Encodable {
+    /// Values left nil are left out, so the activity keeps them.
     struct Input: Encodable {
         let serial: String
         let zoneId: String
         let activityType: String
-        let htsp: String
-        let clsp: String
-        let fan: String?
+        var htsp: String?
+        var clsp: String?
+        var fan: String?
+    }
+
+    let input: Input
+}
+
+/// System settings for an Infinity system. Only the mode is sent.
+struct InfinityConfigVariables: Encodable {
+    struct Input: Encodable {
+        let serial: String
+        let mode: String
     }
 
     let input: Input
@@ -390,6 +401,24 @@ struct EntryLevelZoneVariables: Encodable {
             case serial, index, clsp, htsp
             case scheduleEnabled = "schedule_enabled"
             case holdEndTime = "hold_end_time"
+        }
+    }
+
+    let input: Input
+}
+
+/// Changes a Smart Thermostat zone's mode or fan, and nothing else. Nil values are left out,
+/// so the setpoints, schedule, and hold stay as they are.
+struct EntryLevelZoneModeVariables: Encodable {
+    struct Input: Encodable {
+        let serial: String
+        let index: Int
+        var mode: String?
+        var fanMode: String?
+
+        enum CodingKeys: String, CodingKey {
+            case serial, index, mode
+            case fanMode = "fan_mode"
         }
     }
 

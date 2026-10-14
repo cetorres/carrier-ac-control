@@ -254,6 +254,60 @@ actor CarrierClient {
         }
     }
 
+    /// Switches a unit to heat, cool, auto, or off. Infinity sets the mode for the whole system.
+    func setMode(of thermostat: Thermostat, to mode: String) async throws {
+        switch thermostat.kind {
+        case .infinity:
+            _ = try await graphQL(
+                "updateInfinityConfig",
+                document: CarrierQueries.updateInfinityConfig,
+                variables: InfinityConfigVariables(input: .init(serial: thermostat.systemSerial, mode: mode)),
+                as: InfinityMutationData.self
+            )
+        case .smartThermostat:
+            try await setEntryLevelModes(of: thermostat, mode: mode, fanMode: nil)
+        }
+    }
+
+    /// Changes how the fan runs. Infinity keeps a fan setting per activity, so the change goes to
+    /// the activity the zone is in now.
+    func setFanMode(of thermostat: Thermostat, to fanMode: String) async throws {
+        switch thermostat.kind {
+        case .infinity:
+            _ = try await graphQL(
+                "updateInfinityZoneActivity",
+                document: CarrierQueries.updateInfinityZoneActivity,
+                variables: InfinityZoneActivityVariables(input: .init(
+                    serial: thermostat.systemSerial,
+                    zoneId: thermostat.zoneID,
+                    activityType: thermostat.fanActivityID,
+                    fan: fanMode
+                )),
+                as: InfinityMutationData.self
+            )
+        case .smartThermostat:
+            try await setEntryLevelModes(of: thermostat, mode: nil, fanMode: fanMode)
+        }
+    }
+
+    /// Sends only the mode or fan, so the zone keeps its setpoints, schedule, and hold.
+    private func setEntryLevelModes(of thermostat: Thermostat, mode: String?, fanMode: String?) async throws {
+        let data = try await graphQL(
+            "updateEntryLevelZone",
+            document: CarrierQueries.updateEntryLevelZone,
+            variables: EntryLevelZoneModeVariables(input: .init(
+                serial: thermostat.systemSerial,
+                index: Int(thermostat.zoneID) ?? 0,
+                mode: mode,
+                fanMode: fanMode
+            )),
+            as: EntryLevelZoneUpdateData.self
+        )
+        if data.updateEntryLevelZone?.success?.bool == false {
+            throw CarrierError.graphQL(mode != nil ? "Carrier didn't accept the new mode." : "Carrier didn't accept the new fan setting.")
+        }
+    }
+
     /// Holds a zone in `activity`, or turns the hold off when it's nil.
     private func setInfinityHold(serial: String, zoneID: String, activity: String?, until holdUntil: String?) async throws {
         _ = try await graphQL(

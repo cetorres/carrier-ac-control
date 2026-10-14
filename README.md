@@ -1,6 +1,6 @@
 # CarrierBar
 
-A macOS menu bar app that shows the current temperature of each Carrier unit on your account. Clicking it opens a panel with details for each unit, where you can also change the temperature, hold a comfort profile, and go back to the schedule.
+A macOS menu bar app that shows the current temperature of each Carrier unit on your account. Clicking it opens a panel with details for each unit, where you can also change the temperature, mode, and fan, hold a comfort profile, and go back to the schedule.
 
 <p align="center">
   <img src="Design/Screenshots/panel.png" alt="CarrierBar in the menu bar with its panel open, showing two thermostats" width="420">
@@ -70,7 +70,16 @@ Changes made in the panel go to your real thermostats, the same as changes made 
 - **Choose when the hold ends.** For 1, 2, 4, or 8 hours, or until you change it. Infinity zones also offer until the next scheduled change and until a time you pick. Infinity holds end on a quarter hour, so picked times are rounded to the nearest 15 minutes.
 - **Resume.** Ends the hold, and the unit follows its schedule again.
 
+**Mode and fan.** The row under the schedule has a Mode menu (Off, Heat, Cool, Auto, and on Infinity, Fan Only) and a Fan menu. Smart Thermostats offer Auto, On, and Circulate, like the Carrier app. Infinity offers Auto, Low, Medium, and High. On Infinity the mode belongs to the whole system, so every zone changes with it, and the fan setting belongs to the activity the zone is in now. Changing either one leaves the temperature, schedule, and hold as they are.
+
 Schedule and hold times are shown in the thermostat's time zone, as reported by the system, even if your Mac is somewhere else.
+
+## Settings
+
+The gear at the bottom of the panel opens a menu with Settings, About, Sign Out, and Quit. Settings has two tabs:
+
+- **General.** Launch at login, and the account you're signed in with. If macOS asks you to approve the login item, the tab links to System Settings › General › Login Items.
+- **About.** Version, links, and the disclaimer.
 
 ## How it works
 
@@ -82,7 +91,9 @@ Schedule and hold times are shown in the thermostat's time zone, as reported by 
 
 **Controls on Infinity systems.** Infinity holds a zone in an activity. A temperature change writes the `manual` activity's setpoints with `updateInfinityZoneActivity`, then holds the zone in it with `updateInfinityZoneConfig`. Holding a profile is the same `updateInfinityZoneConfig` call, with that profile as the activity. The hold's end goes in `otmr` as a time of day ("HH:MM", the system's time), or `null` to hold until changed. Resume sets `hold` to `off`. The Infinity controls follow [carrier_api](https://github.com/dahlb/carrier_api) and haven't been tried on a real Infinity system yet.
 
-**Controls on Smart Thermostats.** Everything goes through `updateEntryLevelZone`, which takes both setpoints together. A timed hold sends its length in whole hours as `hold_end_time` and leaves `schedule_enabled` on. A hold until changed turns `schedule_enabled` off. Smart Thermostats have no way to switch to a scene, so holding a profile holds that profile's setpoints, and the panel names the hold after the profile whose setpoints match. Resume turns the schedule back on and sends the setpoints of the profile the schedule calls for. While a timed hold runs, Carrier reports the minutes left in `hold_countdown`.
+**Controls on Smart Thermostats.** Everything goes through `updateEntryLevelZone`, which takes both setpoints together. A timed hold sends its length in whole hours as `hold_end_time` and leaves `schedule_enabled` on. A hold until changed turns `schedule_enabled` off. Smart Thermostats have no way to switch to a scene, so holding a profile holds that profile's setpoints, and the panel names the hold after the profile whose setpoints match. Resume turns the schedule back on and sends the setpoints of the profile the schedule calls for. While a timed hold runs, Carrier reports the minutes left in `hold_countdown`. A mode or fan change sends only `mode` or `fan_mode` with the zone's serial and index, so nothing else changes. Smart Thermostats report `mode` and `fan_mode` in lowercase (`cool`, `auto`). The fan values `on` and `circulate` follow that pattern but haven't been confirmed against a real unit yet.
+
+**Mode and fan on Infinity systems.** The mode goes through `updateInfinityConfig`, which sets it for the whole system. The fan goes through `updateInfinityZoneActivity` on the zone's current activity, as in carrier_api.
 
 **Live updates.** The app keeps Carrier's realtime websocket open. Status messages (temperature, humidity, setpoints, cooling or heating state) are merged into the current data right away. Other messages trigger one debounced refetch. A full fetch also runs every 5 minutes as a safety net, every minute while the websocket is down, and whenever the panel opens with data older than a minute. Waking from sleep reconnects and refreshes.
 
@@ -94,8 +105,9 @@ Schedule and hold times are shown in the thermostat's time zone, as reported by 
 | --- | --- |
 | `App/CarrierBarApp.swift` | `MenuBarExtra` scene with the window style panel |
 | `App/ThermostatStore.swift` | Observable state: session, thermostats, refresh, realtime, polling, and changes waiting for Carrier to confirm them |
+| `App/AppSettings.swift` | Launch at login with `SMAppService`, and the About tab's details |
 | `App/WebSignInWindowController.swift` | my.carrier.com window that picks up the portal's session |
-| `Carrier/CarrierClient.swift` | Actor that signs in, imports web sessions, renews tokens, runs GraphQL queries, and sends setpoint, hold, and resume changes |
+| `Carrier/CarrierClient.swift` | Actor that signs in, imports web sessions, renews tokens, runs GraphQL queries, and sends setpoint, hold, resume, mode, and fan changes |
 | `Carrier/TokenImport.swift` | Reads pasted sessions, headers, and tokens |
 | `Carrier/JWTClaims.swift` | Account, expiry, client, and issuer from an access token |
 | `Carrier/RealtimeListener.swift` | Websocket connection, keepalive, reconnect with backoff, message parsing |
@@ -105,7 +117,7 @@ Schedule and hold times are shown in the thermostat's time zone, as reported by 
 | `Model/Schedule.swift` | Comfort profiles, weekly schedule, and hold lengths, with the schedule math in the thermostat's time zone |
 | `Model/DemoData.swift` | Made-up units for demo mode |
 | `Support/KeychainStore.swift` | Session persistence |
-| `Views/` | Menu bar label, panel, unit card with − and + buttons, schedule row, sign in, web sign in window |
+| `Views/` | Menu bar label, panel and its gear menu, unit card with − and + buttons, schedule row, mode and fan row, Settings window, sign in, web sign in window |
 
 Build settings worth knowing: the Info.plist is generated from build settings (`LSUIElement` is on, so there is no Dock icon), the app is sandboxed with outgoing network access only, the language mode is Swift 5 with minimal concurrency checking, and the default bundle ID is `com.cetorres.CarrierBar`. Signing and the bundle ID come from `Config/Signing.xcconfig`, which a git-ignored `Config/Signing.local.xcconfig` can override.
 
@@ -135,10 +147,8 @@ Please report security problems through GitHub's private vulnerability reporting
 
 ## Roadmap
 
-- Controls: mode and fan, using `updateInfinityConfig` and `updateEntryLevelZone`
 - Edit the weekly schedule and each profile's temperatures, using `updateEntryLevelSchedule` and `updateEntryLevelComfortProfile` on Smart Thermostats
 - Show a short name or icon next to each temperature in the menu bar, or choose which unit appears there
-- Launch at login with `SMAppService`
 
 ## Acknowledgments
 

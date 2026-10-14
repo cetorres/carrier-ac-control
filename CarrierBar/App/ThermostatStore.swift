@@ -34,6 +34,7 @@ final class ThermostatStore {
     @ObservationIgnored private var setpointEdits: [Thermostat.ID: SetpointEdit] = [:]
     @ObservationIgnored private var setpointSends: [Thermostat.ID: Task<Void, Never>] = [:]
     @ObservationIgnored private var holdEdits: [Thermostat.ID: HoldEdit] = [:]
+    @ObservationIgnored private var modeEdits: [Thermostat.ID: ModeEdit] = [:]
 
     /// A setpoint change made here that Carrier may not report back yet.
     private struct SetpointEdit: Equatable {
@@ -49,6 +50,15 @@ final class ThermostatStore {
         let profileID: String?
         let hold: Thermostat.HoldLength
         var sentAt: Date?
+    }
+
+    /// A mode or fan change made here that Carrier may not report back yet. Nil fields aren't changing.
+    fileprivate struct ModeEdit: Equatable {
+        var mode: String?
+        var fanMode: String?
+        var sentAt: Date?
+
+        var isEmpty: Bool { mode == nil && fanMode == nil }
     }
 
     /// Temperatures for the menu bar, in panel order. Nil until there is data to show.
@@ -175,6 +185,7 @@ final class ThermostatStore {
         setpointSends = [:]
         setpointEdits = [:]
         holdEdits = [:]
+        modeEdits = [:]
         thermostats = []
         lastUpdated = nil
         username = nil
@@ -350,6 +361,72 @@ final class ThermostatStore {
         scheduleRefresh()
     }
 
+    /// Switches a unit to heat, cool, auto, or off. On Infinity the mode belongs to the whole
+    /// system, so every zone of it shows the change.
+    func setMode(of id: Thermostat.ID, to mode: String) {
+        changeModes(of: id, mode: mode, fanMode: nil)
+    }
+
+    /// Changes how a unit's fan runs.
+    func setFanMode(of id: Thermostat.ID, to fanMode: String) {
+        changeModes(of: id, mode: nil, fanMode: fanMode)
+    }
+
+    /// Shows a mode or fan change right away, then sends it.
+    private func changeModes(of id: Thermostat.ID, mode: String?, fanMode: String?) {
+        guard phase == .signedIn, let thermostat = thermostats.first(where: { $0.id == id }) else { return }
+        let affected = thermostats
+            .filter { other in
+                other.id == id || (mode != nil && thermostat.kind == .infinity
+                    && other.kind == .infinity && other.systemSerial == thermostat.systemSerial)
+            }
+            .map(\.id)
+
+        let edit = ModeEdit(mode: mode, fanMode: fanMode)
+        for index in thermostats.indices where affected.contains(thermostats[index].id) {
+            thermostats[index].apply(edit)
+        }
+        if isDemo { return }
+
+        for affectedID in affected {
+            var pending = modeEdits[affectedID] ?? ModeEdit()
+            if let mode { pending.mode = mode }
+            if let fanMode, affectedID == id { pending.fanMode = fanMode }
+            pending.sentAt = nil
+            modeEdits[affectedID] = pending
+        }
+        Task { await sendModes(of: thermostat, edit, affecting: affected) }
+    }
+
+    private func sendModes(of thermostat: Thermostat, _ edit: ModeEdit, affecting affected: [Thermostat.ID]) async {
+        do {
+            if let mode = edit.mode {
+                try await client.setMode(of: thermostat, to: mode)
+            }
+            if let fanMode = edit.fanMode {
+                try await client.setFanMode(of: thermostat, to: fanMode)
+            }
+            for id in affected where modeEdits[id] != nil {
+                modeEdits[id]?.sentAt = Date()
+            }
+            errorMessage = nil
+        } catch let error as CarrierError where error.isAuthFailure {
+            await signOut(message: error == .notSignedIn ? nil : error.errorDescription)
+            return
+        } catch {
+            Log.store.error("Mode change failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = "Couldn't change \(thermostat.name): \(error.localizedDescription)"
+            // Show what the unit is really set to, unless a newer change is already on its way.
+            for id in affected {
+                guard var pending = modeEdits[id] else { continue }
+                if edit.mode != nil, pending.mode == edit.mode { pending.mode = nil }
+                if edit.fanMode != nil, pending.fanMode == edit.fanMode { pending.fanMode = nil }
+                modeEdits[id] = pending.isEmpty ? nil : pending
+            }
+        }
+        scheduleRefresh()
+    }
+
     /// Drops a temperature change made here, including one still waiting to be sent, because a
     /// profile hold or resume replaces it.
     private func discardSetpointEdit(of id: Thermostat.ID) {
@@ -361,9 +438,22 @@ final class ThermostatStore {
     /// Lays changes made here over fetched data until Carrier reports them, so the panel doesn't
     /// jump back to the old setpoint or hold while the system catches up.
     private func withPendingEdits(_ fetched: [Thermostat]) -> [Thermostat] {
-        guard !setpointEdits.isEmpty || !holdEdits.isEmpty else { return fetched }
+        guard !setpointEdits.isEmpty || !holdEdits.isEmpty || !modeEdits.isEmpty else { return fetched }
         return fetched.map { thermostat in
             var copy = thermostat
+
+            if let edit = modeEdits[thermostat.id] {
+                // Each field is done once Carrier reports it. The rest stays pending.
+                var remaining = edit
+                if let mode = edit.mode, copy.mode?.lowercased() == mode { remaining.mode = nil }
+                if let fanMode = edit.fanMode, copy.fanMode?.lowercased() == fanMode { remaining.fanMode = nil }
+                if remaining.isEmpty || Self.isExpired(edit.sentAt) {
+                    modeEdits[thermostat.id] = nil
+                } else {
+                    modeEdits[thermostat.id] = remaining
+                    copy.apply(remaining)
+                }
+            }
 
             if let edit = holdEdits[thermostat.id] {
                 let confirmed = edit.profileID.map {
@@ -473,5 +563,10 @@ private extension Thermostat {
         } else {
             applyResume()
         }
+    }
+
+    mutating func apply(_ edit: ThermostatStore.ModeEdit) {
+        if let value = edit.mode { mode = value }
+        if let value = edit.fanMode { fanMode = value }
     }
 }

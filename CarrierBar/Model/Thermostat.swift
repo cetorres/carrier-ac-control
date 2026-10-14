@@ -131,6 +131,61 @@ extension Thermostat {
     }
 }
 
+// MARK: - Mode and fan
+
+extension Thermostat {
+    /// A mode or fan setting the panel offers. `id` is the value Carrier sends and expects.
+    struct ControlOption: Identifiable, Equatable, Sendable {
+        let id: String
+        let title: String
+        let symbol: String
+    }
+
+    /// Smart Thermostats and Infinity systems both report modes in lowercase.
+    var modeOptions: [ControlOption] {
+        var options = [
+            ControlOption(id: "off", title: "Off", symbol: "power"),
+            ControlOption(id: "heat", title: "Heat", symbol: "flame"),
+            ControlOption(id: "cool", title: "Cool", symbol: "snowflake"),
+            ControlOption(id: "auto", title: "Auto", symbol: "arrow.left.and.right"),
+        ]
+        if kind == .infinity {
+            options.append(ControlOption(id: "fanonly", title: "Fan Only", symbol: "fan"))
+        }
+        return options
+    }
+
+    /// Smart Thermostats offer the same three choices as the Carrier app. Infinity sets a fan
+    /// speed, and reports "off" when the fan runs only with heating or cooling.
+    var fanOptions: [ControlOption] {
+        switch kind {
+        case .smartThermostat:
+            return [
+                ControlOption(id: "auto", title: "Auto", symbol: "fan"),
+                ControlOption(id: "on", title: "On", symbol: "fan.fill"),
+                ControlOption(id: "circulate", title: "Circulate", symbol: "arrow.triangle.2.circlepath"),
+            ]
+        case .infinity:
+            return [
+                ControlOption(id: "off", title: "Auto", symbol: "fan"),
+                ControlOption(id: "low", title: "Low", symbol: "fan.fill"),
+                ControlOption(id: "med", title: "Medium", symbol: "fan.fill"),
+                ControlOption(id: "high", title: "High", symbol: "fan.fill"),
+            ]
+        }
+    }
+
+    /// Whether the panel can change the mode and fan. A unit that reports neither has nothing to show.
+    var canChangeModeAndFan: Bool {
+        isOnline && (mode != nil || fanMode != nil)
+    }
+
+    /// Infinity keeps its fan setting in each activity. A change goes to the activity the zone is in now.
+    var fanActivityID: String {
+        activity?.lowercased() ?? "manual"
+    }
+}
+
 private extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)

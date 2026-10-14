@@ -44,11 +44,16 @@ struct ThermostatCard: View {
                 ScheduleControls(thermostat: thermostat)
             }
 
+            if thermostat.canChangeModeAndFan {
+                ModeControls(thermostat: thermostat)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 3) {
-                DetailRow(title: "Mode", value: thermostat.modeText)
-                DetailRow(title: "Fan", value: thermostat.fanText)
+                // The mode and fan row already shows these.
+                DetailRow(title: "Mode", value: thermostat.canChangeModeAndFan ? nil : thermostat.modeText)
+                DetailRow(title: "Fan", value: thermostat.canChangeModeAndFan ? nil : thermostat.fanText)
                 // The schedule row already says what the unit is doing.
                 DetailRow(title: "Activity", value: thermostat.showsScheduleControls ? nil : thermostat.activityText)
                 DetailRow(title: "Outdoor", value: thermostat.outdoorTemperature.map { DisplayFormat.temperature($0) })

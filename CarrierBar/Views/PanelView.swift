@@ -53,19 +53,11 @@ private struct SignedInPanel: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Carrier Smart Thermostat")
-                    .font(.headline)
-                HStack(spacing: 5) {
-                    if store.isLive {
-                        Circle()
-                            .fill(.green)
-                            .frame(width: 6, height: 6)
-                            .help("Receiving live updates")
-                    }
-                    Text(statusText)
+                HStack {
+                    Image(systemName: "snowflake")
+                    Text("Carrier Smart Thermostat")
+                        .font(.headline)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -111,21 +103,20 @@ private struct SignedInPanel: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            if let username = store.username {
-                Text(username)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            HStack(spacing: 5) {
+                if store.isLive {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: 6, height: 6)
+                        .help("Receiving live updates")
+                }
+                Text(statusText)
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
             Spacer()
-            Button("Sign Out") {
-                Task { await store.signOut() }
-            }
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
-            }
+            PanelMenu()
         }
-        .buttonStyle(.borderless)
         .font(.caption)
     }
 }
