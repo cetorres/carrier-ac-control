@@ -40,12 +40,17 @@ struct ThermostatCard: View {
                 }
             }
 
+            if thermostat.showsScheduleControls {
+                ScheduleControls(thermostat: thermostat)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 3) {
                 DetailRow(title: "Mode", value: thermostat.modeText)
                 DetailRow(title: "Fan", value: thermostat.fanText)
-                DetailRow(title: "Activity", value: thermostat.activityText)
+                // The schedule row already says what the unit is doing.
+                DetailRow(title: "Activity", value: thermostat.showsScheduleControls ? nil : thermostat.activityText)
                 DetailRow(title: "Outdoor", value: thermostat.outdoorTemperature.map { DisplayFormat.temperature($0) })
                 DetailRow(title: "Filter used", value: DisplayFormat.percent(thermostat.filterUsedPercent))
                 DetailRow(title: "Indoor unit", value: DisplayFormat.title(thermostat.indoorUnitStatus))

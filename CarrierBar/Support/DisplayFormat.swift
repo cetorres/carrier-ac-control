@@ -12,6 +12,11 @@ enum DisplayFormat {
         return "\(Int(value.rounded()))%"
     }
 
+    /// "6:00 PM", as a clock in `timeZone` (the thermostat's) shows it.
+    static func time(_ date: Date, in timeZone: TimeZone) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: timeZone))
+    }
+
     /// Turns API values like "active_cool" or "low" into "Active cool" or "Low".
     static func title(_ raw: String?) -> String? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }

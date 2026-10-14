@@ -53,6 +53,18 @@ struct Thermostat: Identifiable, Equatable, Sendable {
     var indoorUnitStatus: String?
     var outdoorUnitStatus: String?
     var usesCelsius: Bool = false
+    /// Infinity only. Empty when the zone has none, or for Smart Thermostats.
+    var comfortProfiles: [ComfortProfile] = []
+    /// The weekly schedule, sorted by day and time. Empty when there is none.
+    var schedule: [SchedulePeriod] = []
+    /// Infinity: when the current hold ends, "HH:MM" in the system's time. Nil holds until changed.
+    var holdUntil: String?
+    /// Smart Thermostats: how many hours the current timed hold lasts. Nil holds until changed.
+    var holdHours: Int?
+    /// Smart Thermostats: when the current timed hold ends, from the minutes it reports are left.
+    var holdEndsAt: Date?
+    /// The time zone the system's schedule and hold times are in.
+    var timeZone: TimeZone = .current
 }
 
 // MARK: - Setpoint changes
@@ -71,9 +83,10 @@ extension Thermostat {
 
     /// Moves the setpoint the current mode uses by `steps` whole degrees, keeping the other one
     /// far enough away that the system accepts the pair. In auto both move together.
+    /// The unit is held for `hold`.
     /// Returns false when nothing changed, for example at the end of the allowed range.
     @discardableResult
-    mutating func adjustSetpoints(by steps: Int) -> Bool {
+    mutating func adjustSetpoints(by steps: Int, until hold: HoldLength) -> Bool {
         guard canAdjustSetpoints, steps != 0, let heat = heatSetpoint, let cool = coolSetpoint else { return false }
         let range: ClosedRange<Double> = usesCelsius ? 10...32 : 50...90
         let deadband: Double = usesCelsius ? 1 : 2
@@ -99,18 +112,22 @@ extension Thermostat {
         }
 
         guard newHeat != heat || newCool != cool else { return false }
-        applyHeldSetpoints(heat: newHeat, cool: newCool)
+        applyHeldSetpoints(heat: newHeat, cool: newCool, until: hold)
         return true
     }
 
     /// Shows the unit held at these setpoints, as it reports itself after a manual change.
-    mutating func applyHeldSetpoints(heat: Double, cool: Double) {
+    mutating func applyHeldSetpoints(heat: Double, cool: Double, until hold: HoldLength) {
         heatSetpoint = heat
         coolSetpoint = cool
         isOnHold = true
-        if kind == .infinity {
+        switch kind {
+        case .infinity:
             activity = "manual"
+        case .smartThermostat:
+            activity = profileID(matchingHeat: heat, cool: cool) ?? "manual"
         }
+        applyHoldLength(hold)
     }
 }
 
@@ -129,19 +146,21 @@ extension Thermostat {
         let status = system.status
         let systemName = system.profile?.name?.string ?? "Carrier"
 
-        let zoneNames = Dictionary(
-            (system.config?.zones ?? []).compactMap { zone -> (String, String)? in
-                guard let id = zone.id?.string, let name = zone.name?.string else { return nil }
-                return (id, name)
+        let zoneConfigs = Dictionary(
+            (system.config?.zones ?? []).compactMap { zone -> (String, InfinitySystemDTO.ZoneConfig)? in
+                guard let id = zone.id?.string else { return nil }
+                return (id, zone)
             },
             uniquingKeysWith: { first, _ in first }
         )
+        let timeZone = Self.timeZone(fromLocalTime: status?.localTime?.string) ?? .current
         let zones = (status?.zones ?? []).filter { $0.enabled?.bool ?? true }
 
         return zones.compactMap { zone -> Thermostat? in
             guard let zoneID = zone.id?.string else { return nil }
+            let config = zoneConfigs[zoneID]
             let name = zones.count > 1
-                ? "\(systemName) · \(zoneNames[zoneID] ?? "Zone \(zoneID)")"
+                ? "\(systemName) · \(config?.name?.string ?? "Zone \(zoneID)")"
                 : systemName
 
             return Thermostat(
@@ -167,7 +186,11 @@ extension Thermostat {
                 firmware: system.profile?.firmware?.string,
                 indoorUnitStatus: status?.idu?.opstat?.string,
                 outdoorUnitStatus: status?.odu?.opstat?.string,
-                usesCelsius: status?.cfgem?.string?.uppercased() == "C"
+                usesCelsius: status?.cfgem?.string?.uppercased() == "C",
+                comfortProfiles: Self.comfortProfiles(from: config?.activities),
+                schedule: Self.schedule(from: config?.program),
+                holdUntil: config?.otmr?.string.flatMap(Self.minutes(fromClock:)).map(Self.clockText(minutes:)),
+                timeZone: timeZone
             )
         }
     }
@@ -177,9 +200,16 @@ extension Thermostat {
         let zones = system.zones ?? []
         let systemName = system.name?.string ?? "Thermostat"
 
+        let timeZone = system.timezone?.double
+            .flatMap { TimeZone(secondsFromGMT: Int(($0 * 3600).rounded())) } ?? .current
+
         return zones.enumerated().map { offset, zone -> Thermostat in
             let zoneID = zone.index?.string ?? String(offset)
-            return Thermostat(
+            // A timed hold reports its length in hours and leaves the schedule on.
+            // A hold until changed turns the schedule off.
+            let holdHours = zone.holdEndTime?.double.map { Int($0) }.flatMap { $0 > 0 ? $0 : nil }
+            let isOnHold = zone.scheduleEnabled?.bool == false || holdHours != nil
+            var thermostat = Thermostat(
                 id: "\(serial)#\(zoneID)",
                 kind: .smartThermostat,
                 systemSerial: serial,
@@ -192,8 +222,8 @@ extension Thermostat {
                 coolSetpoint: zone.clsp?.current?.double,
                 mode: zone.mode?.string,
                 fanMode: zone.fanMode?.string,
-                activity: nil,
-                isOnHold: zone.scheduleEnabled?.bool == false,
+                activity: zone.currentSceneName?.string?.lowercased(),
+                isOnHold: isOnHold,
                 conditioning: Conditioning(rawStatus: zone.stageStatus?.string),
                 conditioningDetail: zone.stageStatus?.string,
                 outdoorTemperature: zone.outsideTemp?.double,
@@ -202,8 +232,21 @@ extension Thermostat {
                 firmware: system.firmware?.string,
                 indoorUnitStatus: nil,
                 outdoorUnitStatus: nil,
-                usesCelsius: system.temperatureUnit?.string?.uppercased().hasPrefix("C") ?? false
+                usesCelsius: system.temperatureUnit?.string?.uppercased().hasPrefix("C") ?? false,
+                comfortProfiles: Self.comfortProfiles(from: zone.comfortProfile),
+                schedule: Self.schedule(from: zone.schedule),
+                holdHours: isOnHold ? holdHours : nil,
+                holdEndsAt: isOnHold && holdHours != nil
+                    ? zone.holdCountdown?.double.map { Date().addingTimeInterval($0 * 60) }
+                    : nil,
+                timeZone: timeZone
             )
+            // A hold leaves the scene name on the scheduled one. Name the hold after the profile
+            // its setpoints match, or call it manual.
+            if isOnHold, let heat = thermostat.heatSetpoint, let cool = thermostat.coolSetpoint {
+                thermostat.activity = thermostat.profileID(matchingHeat: heat, cool: cool) ?? "manual"
+            }
+            return thermostat
         }
     }
 

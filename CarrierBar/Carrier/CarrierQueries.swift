@@ -34,6 +34,7 @@ enum CarrierQueries {
           odutype
         }
         status {
+          localTime
           isDisconnected
           cfgem
           mode
@@ -59,6 +60,28 @@ enum CarrierQueries {
             id
             name
             enabled
+            hold
+            holdActivity
+            otmr
+            program {
+              id
+              day {
+                id
+                period {
+                  id
+                  activity
+                  time
+                  enabled
+                }
+              }
+            }
+            activities {
+              id
+              type
+              fan
+              htsp
+              clsp
+            }
           }
         }
       }
@@ -74,7 +97,8 @@ enum CarrierQueries {
     }
     """
 
-    /// Puts a zone on hold in an activity, which is how the manual activity takes effect.
+    /// Puts a zone on hold in an activity (the manual one, or a comfort profile like "away"),
+    /// or turns the hold off so the zone follows its schedule again.
     static let updateInfinityZoneConfig = """
     mutation updateInfinityZoneConfig($input: InfinityZoneConfigInput!) {
       updateInfinityZoneConfig(input: $input) {
@@ -100,6 +124,7 @@ enum CarrierQueries {
         model
         firmware
         temp_unit_format
+        timezone
         connection {
           isConnected
           deviceId
@@ -115,6 +140,20 @@ enum CarrierQueries {
           schedule_enabled
           stage_status
           outside_temp
+          current_scene_name
+          hold_end_time
+          hold_countdown
+          schedule {
+            scene_name
+            start_time
+            day
+          }
+          comfort_profile {
+            wake { htsp clsp }
+            home { htsp clsp }
+            away { htsp clsp }
+            sleep { htsp clsp }
+          }
         }
       }
     }

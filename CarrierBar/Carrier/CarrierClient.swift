@@ -4,7 +4,7 @@ import Foundation
 /// my.carrier.com use.
 ///
 /// Gets a session, keeps its access token fresh, fetches thermostat status, and changes
-/// setpoints.
+/// setpoints and holds.
 /// A session comes from a password sign in or from tokens taken from a my.carrier.com web session.
 /// It's kept in the Keychain. Passwords are never stored.
 actor CarrierClient {
@@ -177,9 +177,8 @@ actor CarrierClient {
 
     // MARK: - Control
 
-    /// Holds a unit at new setpoints until they're changed again, like changing the temperature
-    /// on the thermostat itself.
-    func setSetpoints(of thermostat: Thermostat, heat: Double, cool: Double) async throws {
+    /// Holds a unit at new setpoints for `hold`, like changing the temperature on the thermostat itself.
+    func setSetpoints(of thermostat: Thermostat, heat: Double, cool: Double, hold: Thermostat.HoldLength) async throws {
         switch thermostat.kind {
         case .infinity:
             try await setInfinitySetpoints(
@@ -187,15 +186,11 @@ actor CarrierClient {
                 zoneID: thermostat.zoneID,
                 heat: heat,
                 cool: cool,
-                fanMode: thermostat.fanMode
+                fanMode: thermostat.fanMode,
+                holdUntil: hold.clockText
             )
         case .smartThermostat:
-            try await setEntryLevelSetpoints(
-                serial: thermostat.systemSerial,
-                index: Int(thermostat.zoneID) ?? 0,
-                heat: heat,
-                cool: cool
-            )
+            try await setEntryLevelZone(of: thermostat, heat: heat, cool: cool, hold: hold)
         }
     }
 
@@ -205,7 +200,8 @@ actor CarrierClient {
         zoneID: String,
         heat: Double,
         cool: Double,
-        fanMode: String?
+        fanMode: String?,
+        holdUntil: String?
     ) async throws {
         _ = try await graphQL(
             "updateInfinityZoneActivity",
@@ -220,31 +216,85 @@ actor CarrierClient {
             )),
             as: InfinityMutationData.self
         )
+        try await setInfinityHold(serial: serial, zoneID: zoneID, activity: "manual", until: holdUntil)
+    }
+
+    /// Holds a zone in a comfort profile, like "away", for `hold`.
+    func hold(_ thermostat: Thermostat, in profileID: String, until hold: Thermostat.HoldLength) async throws {
+        switch thermostat.kind {
+        case .infinity:
+            try await setInfinityHold(
+                serial: thermostat.systemSerial,
+                zoneID: thermostat.zoneID,
+                activity: profileID,
+                until: hold.clockText
+            )
+        case .smartThermostat:
+            // Smart Thermostats can't be switched to a scene. Hold the scene's setpoints instead.
+            let profile = thermostat.profile(profileID)
+            guard let heat = profile?.heatSetpoint ?? thermostat.heatSetpoint,
+                  let cool = profile?.coolSetpoint ?? thermostat.coolSetpoint
+            else { throw CarrierError.graphQL("\(DisplayFormat.title(profileID) ?? profileID) has no temperatures set.") }
+            try await setEntryLevelZone(of: thermostat, heat: heat, cool: cool, hold: hold)
+        }
+    }
+
+    /// Ends a hold so the zone follows its schedule again.
+    func resumeSchedule(of thermostat: Thermostat) async throws {
+        switch thermostat.kind {
+        case .infinity:
+            try await setInfinityHold(serial: thermostat.systemSerial, zoneID: thermostat.zoneID, activity: nil, until: nil)
+        case .smartThermostat:
+            // Send the scheduled scene's setpoints along, so the zone goes straight back to them.
+            let scheduled = thermostat.scheduledProfileID(at: Date()).flatMap(thermostat.profile)
+            guard let heat = scheduled?.heatSetpoint ?? thermostat.heatSetpoint,
+                  let cool = scheduled?.coolSetpoint ?? thermostat.coolSetpoint
+            else { throw CarrierError.graphQL("Carrier didn't report this thermostat's temperatures.") }
+            try await setEntryLevelZone(of: thermostat, heat: heat, cool: cool, hold: nil)
+        }
+    }
+
+    /// Holds a zone in `activity`, or turns the hold off when it's nil.
+    private func setInfinityHold(serial: String, zoneID: String, activity: String?, until holdUntil: String?) async throws {
         _ = try await graphQL(
             "updateInfinityZoneConfig",
             document: CarrierQueries.updateInfinityZoneConfig,
             variables: InfinityZoneConfigVariables(input: .init(
                 serial: serial,
                 zoneId: zoneID,
-                hold: "on",
-                holdActivity: "manual",
-                otmr: nil
+                hold: activity == nil ? "off" : "on",
+                holdActivity: activity,
+                otmr: activity == nil ? nil : holdUntil
             )),
             as: InfinityMutationData.self
         )
     }
 
-    /// Smart Thermostats take both setpoints in one change. Turning the schedule off holds them.
-    private func setEntryLevelSetpoints(serial: String, index: Int, heat: Double, cool: Double) async throws {
+    /// Smart Thermostats take both setpoints in one change, with how long to hold them. A timed
+    /// hold gives its length in hours and leaves the schedule on. A hold until changed turns the
+    /// schedule off. A nil `hold` follows the schedule again.
+    private func setEntryLevelZone(of thermostat: Thermostat, heat: Double, cool: Double, hold: Thermostat.HoldLength?) async throws {
+        let scheduleEnabled: Bool
+        let holdHours: Int
+        switch hold {
+        case nil:
+            (scheduleEnabled, holdHours) = (true, 0)
+        case .hours(let hours)?:
+            (scheduleEnabled, holdHours) = (true, max(1, hours))
+        case .untilChanged?, .untilClock?:
+            (scheduleEnabled, holdHours) = (false, 0)
+        }
+
         let data = try await graphQL(
             "updateEntryLevelZone",
             document: CarrierQueries.updateEntryLevelZone,
             variables: EntryLevelZoneVariables(input: .init(
-                serial: serial,
-                index: index,
+                serial: thermostat.systemSerial,
+                index: Int(thermostat.zoneID) ?? 0,
                 clsp: .init(current: cool),
                 htsp: .init(current: heat),
-                scheduleEnabled: false
+                scheduleEnabled: scheduleEnabled,
+                holdEndTime: holdHours
             )),
             as: EntryLevelZoneUpdateData.self
         )

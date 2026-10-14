@@ -118,6 +118,8 @@ struct InfinitySystemDTO: Decodable {
     }
 
     struct Status: Decodable {
+        /// The system's clock, like "2024-08-14T22:15:28-04:00". Its offset is the house's time zone.
+        let localTime: JSONScalar?
         let isDisconnected: JSONScalar?
         let cfgem: JSONScalar?
         let mode: JSONScalar?
@@ -128,10 +130,61 @@ struct InfinitySystemDTO: Decodable {
         let zones: [ZoneStatus]?
     }
 
+    /// A comfort profile ("home", "away", "sleep", "wake", "manual", "vacation") and its settings.
+    struct Activity: Decodable {
+        let id: JSONScalar?
+        let type: JSONScalar?
+        let fan: JSONScalar?
+        let htsp: JSONScalar?
+        let clsp: JSONScalar?
+    }
+
+    /// When an activity starts on a day. Each day has a fixed number of periods; unused ones are disabled.
+    struct Period: Decodable {
+        let id: JSONScalar?
+        let activity: JSONScalar?
+        let time: JSONScalar?
+        let enabled: JSONScalar?
+    }
+
+    struct Day: Decodable {
+        let id: JSONScalar?
+        let period: [Period]?
+    }
+
+    struct Program: Decodable {
+        let id: JSONScalar?
+        let day: [Day]?
+    }
+
     struct ZoneConfig: Decodable {
         let id: JSONScalar?
         let name: JSONScalar?
         let enabled: JSONScalar?
+        let hold: JSONScalar?
+        let holdActivity: JSONScalar?
+        /// When the hold ends ("HH:MM"), if it isn't held until changed.
+        let otmr: JSONScalar?
+        let program: Program?
+        let activities: [Activity]?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, enabled, hold, holdActivity, otmr, program, activities
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(JSONScalar.self, forKey: .id)
+            name = try container.decodeIfPresent(JSONScalar.self, forKey: .name)
+            enabled = try container.decodeIfPresent(JSONScalar.self, forKey: .enabled)
+            hold = try container.decodeIfPresent(JSONScalar.self, forKey: .hold)
+            holdActivity = try container.decodeIfPresent(JSONScalar.self, forKey: .holdActivity)
+            otmr = try container.decodeIfPresent(JSONScalar.self, forKey: .otmr)
+            // The schedule is extra. If its shape is ever unexpected, show the unit without it
+            // instead of failing the whole payload.
+            program = try? container.decodeIfPresent(Program.self, forKey: .program)
+            activities = try? container.decodeIfPresent([Activity].self, forKey: .activities)
+        }
     }
 
     struct Config: Decodable {
@@ -160,10 +213,27 @@ struct InfinityZoneConfigVariables: Encodable {
     struct Input: Encodable {
         let serial: String
         let zoneId: String
+        /// "on" to hold, "off" to follow the schedule.
         let hold: String
-        let holdActivity: String
-        /// Hold until this time ("HH:MM"). Nil holds until the next change.
+        /// The activity to hold in. Nil when turning the hold off.
+        let holdActivity: String?
+        /// Hold until this time ("HH:MM", the system's time). Nil holds until the next change.
         let otmr: String?
+
+        enum CodingKeys: String, CodingKey {
+            case serial, zoneId, hold, holdActivity, otmr
+        }
+
+        /// Missing values are sent as null rather than left out, so an earlier hold's end time
+        /// doesn't carry over.
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(serial, forKey: .serial)
+            try container.encode(zoneId, forKey: .zoneId)
+            try container.encode(hold, forKey: .hold)
+            try container.encode(holdActivity, forKey: .holdActivity)
+            try container.encode(otmr, forKey: .otmr)
+        }
     }
 
     let input: Input
@@ -208,6 +278,32 @@ struct EntryLevelSystemDTO: Decodable {
         let current: JSONScalar?
     }
 
+    /// When a scene ("wake", "home", "away", "sleep") starts. Days count from 0 for Sunday.
+    struct ScheduleEntry: Decodable {
+        let sceneName: JSONScalar?
+        let startTime: JSONScalar?
+        let day: JSONScalar?
+
+        enum CodingKeys: String, CodingKey {
+            case day
+            case sceneName = "scene_name"
+            case startTime = "start_time"
+        }
+    }
+
+    struct ComfortProfileItem: Decodable {
+        let htsp: JSONScalar?
+        let clsp: JSONScalar?
+    }
+
+    /// Setpoints for each scene. Scenes that aren't set up are null.
+    struct ComfortProfile: Decodable {
+        let wake: ComfortProfileItem?
+        let home: ComfortProfileItem?
+        let away: ComfortProfileItem?
+        let sleep: ComfortProfileItem?
+    }
+
     struct Zone: Decodable {
         let index: JSONScalar?
         let mode: JSONScalar?
@@ -219,13 +315,44 @@ struct EntryLevelSystemDTO: Decodable {
         let scheduleEnabled: JSONScalar?
         let stageStatus: JSONScalar?
         let outsideTemp: JSONScalar?
+        let currentSceneName: JSONScalar?
+        /// Length of a timed hold in hours, or 0 when there isn't one.
+        let holdEndTime: JSONScalar?
+        /// Minutes left in a timed hold.
+        let holdCountdown: JSONScalar?
+        let schedule: [ScheduleEntry]?
+        let comfortProfile: ComfortProfile?
 
         enum CodingKeys: String, CodingKey {
-            case index, mode, rt, rh, clsp, htsp
+            case index, mode, rt, rh, clsp, htsp, schedule
             case fanMode = "fan_mode"
             case scheduleEnabled = "schedule_enabled"
             case stageStatus = "stage_status"
             case outsideTemp = "outside_temp"
+            case currentSceneName = "current_scene_name"
+            case holdEndTime = "hold_end_time"
+            case holdCountdown = "hold_countdown"
+            case comfortProfile = "comfort_profile"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            index = try container.decodeIfPresent(JSONScalar.self, forKey: .index)
+            mode = try container.decodeIfPresent(JSONScalar.self, forKey: .mode)
+            rt = try container.decodeIfPresent(JSONScalar.self, forKey: .rt)
+            rh = try container.decodeIfPresent(JSONScalar.self, forKey: .rh)
+            clsp = try container.decodeIfPresent(SetPoint.self, forKey: .clsp)
+            htsp = try container.decodeIfPresent(SetPoint.self, forKey: .htsp)
+            fanMode = try container.decodeIfPresent(JSONScalar.self, forKey: .fanMode)
+            scheduleEnabled = try container.decodeIfPresent(JSONScalar.self, forKey: .scheduleEnabled)
+            stageStatus = try container.decodeIfPresent(JSONScalar.self, forKey: .stageStatus)
+            outsideTemp = try container.decodeIfPresent(JSONScalar.self, forKey: .outsideTemp)
+            currentSceneName = try container.decodeIfPresent(JSONScalar.self, forKey: .currentSceneName)
+            holdEndTime = try container.decodeIfPresent(JSONScalar.self, forKey: .holdEndTime)
+            holdCountdown = try container.decodeIfPresent(JSONScalar.self, forKey: .holdCountdown)
+            // The schedule is extra. If its shape is ever unexpected, show the unit without it.
+            schedule = try? container.decodeIfPresent([ScheduleEntry].self, forKey: .schedule)
+            comfortProfile = try? container.decodeIfPresent(ComfortProfile.self, forKey: .comfortProfile)
         }
     }
 
@@ -234,11 +361,13 @@ struct EntryLevelSystemDTO: Decodable {
     let model: JSONScalar?
     let firmware: JSONScalar?
     let temperatureUnit: JSONScalar?
+    /// Hours from UTC, like -4.
+    let timezone: JSONScalar?
     let connection: Connection?
     let zones: [Zone]?
 
     enum CodingKeys: String, CodingKey {
-        case serial, name, model, firmware, connection, zones
+        case serial, name, model, firmware, connection, zones, timezone
         case temperatureUnit = "temp_unit_format"
     }
 }
@@ -252,12 +381,15 @@ struct EntryLevelZoneVariables: Encodable {
         let index: Int
         let clsp: SetPoint
         let htsp: SetPoint
-        /// False holds the zone at these setpoints instead of following the schedule.
+        /// False holds the zone at these setpoints until changed. A timed hold keeps it true.
         let scheduleEnabled: Bool
+        /// Hours a timed hold lasts. 0 for no timed hold.
+        let holdEndTime: Int
 
         enum CodingKeys: String, CodingKey {
             case serial, index, clsp, htsp
             case scheduleEnabled = "schedule_enabled"
+            case holdEndTime = "hold_end_time"
         }
     }
 

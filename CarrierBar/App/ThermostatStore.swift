@@ -33,11 +33,21 @@ final class ThermostatStore {
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var setpointEdits: [Thermostat.ID: SetpointEdit] = [:]
     @ObservationIgnored private var setpointSends: [Thermostat.ID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var holdEdits: [Thermostat.ID: HoldEdit] = [:]
 
     /// A setpoint change made here that Carrier may not report back yet.
     private struct SetpointEdit: Equatable {
         let heat: Double
         let cool: Double
+        var hold: Thermostat.HoldLength
+        var sentAt: Date?
+    }
+
+    /// A hold or resume made here that Carrier may not report back yet.
+    fileprivate struct HoldEdit: Equatable {
+        /// The profile to hold, or nil to resume the schedule.
+        let profileID: String?
+        let hold: Thermostat.HoldLength
         var sentAt: Date?
     }
 
@@ -164,6 +174,7 @@ final class ThermostatStore {
         setpointSends.values.forEach { $0.cancel() }
         setpointSends = [:]
         setpointEdits = [:]
+        holdEdits = [:]
         thermostats = []
         lastUpdated = nil
         username = nil
@@ -206,7 +217,7 @@ final class ThermostatStore {
 
     private func performRefresh() async {
         do {
-            thermostats = withSetpointEdits(try await client.fetchThermostats())
+            thermostats = withPendingEdits(try await client.fetchThermostats())
             lastUpdated = Date()
             errorMessage = nil
         } catch let error as CarrierError where error.isAuthFailure {
@@ -221,17 +232,21 @@ final class ThermostatStore {
 
     /// Nudges a unit's setpoint by whole degrees. The panel updates right away. The change is sent
     /// once the taps pause, so several quick taps become a single request.
+    /// The hold lasts as long as `Thermostat.defaultHoldLength` says.
     func adjustSetpoint(of id: Thermostat.ID, by steps: Int) {
         guard phase == .signedIn, let index = thermostats.firstIndex(where: { $0.id == id }) else { return }
         var thermostat = thermostats[index]
-        guard thermostat.adjustSetpoints(by: steps),
+        let hold = thermostat.defaultHoldLength
+        guard thermostat.adjustSetpoints(by: steps, until: hold),
               let heat = thermostat.heatSetpoint,
               let cool = thermostat.coolSetpoint
         else { return }
         thermostats[index] = thermostat
         if isDemo { return }
 
-        setpointEdits[id] = SetpointEdit(heat: heat, cool: cool)
+        // This replaces any profile hold still on its way.
+        holdEdits[id] = nil
+        setpointEdits[id] = SetpointEdit(heat: heat, cool: cool, hold: hold)
         setpointSends[id]?.cancel()
         setpointSends[id] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))
@@ -247,7 +262,7 @@ final class ThermostatStore {
         else { return }
 
         do {
-            try await client.setSetpoints(of: thermostat, heat: edit.heat, cool: edit.cool)
+            try await client.setSetpoints(of: thermostat, heat: edit.heat, cool: edit.cool, hold: edit.hold)
             // Keep showing the new values until Carrier reports them, which can take a little while.
             if setpointEdits[id] == edit {
                 setpointEdits[id]?.sentAt = Date()
@@ -267,22 +282,115 @@ final class ThermostatStore {
         scheduleRefresh()
     }
 
-    /// Lays changes made here over fetched data until Carrier reports them, so the panel doesn't
-    /// jump back to the old setpoint while the system catches up.
-    private func withSetpointEdits(_ fetched: [Thermostat]) -> [Thermostat] {
-        guard !setpointEdits.isEmpty else { return fetched }
-        return fetched.map { thermostat in
-            guard let edit = setpointEdits[thermostat.id] else { return thermostat }
-            let confirmed = thermostat.heatSetpoint == edit.heat && thermostat.coolSetpoint == edit.cool
-            let expired = edit.sentAt.map { Date().timeIntervalSince($0) > 90 } ?? false
-            if confirmed || expired {
-                setpointEdits[thermostat.id] = nil
-                return thermostat
+    /// Holds a zone in a comfort profile, for as long as `Thermostat.defaultHoldLength` says.
+    func holdProfile(_ profileID: String, of id: Thermostat.ID) {
+        guard let thermostat = thermostats.first(where: { $0.id == id }) else { return }
+        discardSetpointEdit(of: id)
+        changeHold(of: id, to: HoldEdit(profileID: profileID, hold: thermostat.defaultHoldLength))
+    }
+
+    /// Changes when the current hold ends, keeping the profile or manual temperature it holds.
+    func setHoldEnd(of id: Thermostat.ID, to end: Thermostat.HoldEnd) {
+        guard let index = thermostats.firstIndex(where: { $0.id == id }),
+              thermostats[index].isOnHold,
+              let profileID = thermostats[index].currentProfileID
+        else { return }
+        let hold = thermostats[index].holdLength(for: end)
+
+        // A temperature change still waiting to go out carries the new end with it.
+        if setpointEdits[id] != nil {
+            setpointEdits[id]?.hold = hold
+            if setpointSends[id] != nil {
+                thermostats[index].applyHoldLength(hold)
+                return
             }
+        }
+        changeHold(of: id, to: HoldEdit(profileID: profileID, hold: hold))
+    }
+
+    /// Ends a hold so the zone follows its schedule again.
+    func resumeSchedule(of id: Thermostat.ID) {
+        discardSetpointEdit(of: id)
+        changeHold(of: id, to: HoldEdit(profileID: nil, hold: .untilChanged))
+    }
+
+    /// Shows a hold change right away, then sends it.
+    private func changeHold(of id: Thermostat.ID, to edit: HoldEdit) {
+        guard phase == .signedIn, let index = thermostats.firstIndex(where: { $0.id == id }) else { return }
+        thermostats[index].apply(edit)
+        if isDemo { return }
+
+        holdEdits[id] = edit
+        Task { await sendHold(of: id, edit) }
+    }
+
+    private func sendHold(of id: Thermostat.ID, _ edit: HoldEdit) async {
+        guard let thermostat = thermostats.first(where: { $0.id == id }) else { return }
+
+        do {
+            if let profileID = edit.profileID {
+                try await client.hold(thermostat, in: profileID, until: edit.hold)
+            } else {
+                try await client.resumeSchedule(of: thermostat)
+            }
+            if holdEdits[id] == edit {
+                holdEdits[id]?.sentAt = Date()
+            }
+            errorMessage = nil
+        } catch let error as CarrierError where error.isAuthFailure {
+            await signOut(message: error == .notSignedIn ? nil : error.errorDescription)
+            return
+        } catch {
+            Log.store.error("Hold change failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = "Couldn't change \(thermostat.name): \(error.localizedDescription)"
+            if holdEdits[id] == edit {
+                holdEdits[id] = nil
+            }
+        }
+        scheduleRefresh()
+    }
+
+    /// Drops a temperature change made here, including one still waiting to be sent, because a
+    /// profile hold or resume replaces it.
+    private func discardSetpointEdit(of id: Thermostat.ID) {
+        setpointSends[id]?.cancel()
+        setpointSends[id] = nil
+        setpointEdits[id] = nil
+    }
+
+    /// Lays changes made here over fetched data until Carrier reports them, so the panel doesn't
+    /// jump back to the old setpoint or hold while the system catches up.
+    private func withPendingEdits(_ fetched: [Thermostat]) -> [Thermostat] {
+        guard !setpointEdits.isEmpty || !holdEdits.isEmpty else { return fetched }
+        return fetched.map { thermostat in
             var copy = thermostat
-            copy.applyHeldSetpoints(heat: edit.heat, cool: edit.cool)
+
+            if let edit = holdEdits[thermostat.id] {
+                let confirmed = edit.profileID.map {
+                    copy.isOnHold && copy.currentProfileID == $0 && copy.currentHoldLength == edit.hold
+                } ?? !copy.isOnHold
+                if confirmed || Self.isExpired(edit.sentAt) {
+                    holdEdits[thermostat.id] = nil
+                } else {
+                    copy.apply(edit)
+                }
+            }
+
+            if let edit = setpointEdits[thermostat.id] {
+                let confirmed = copy.heatSetpoint == edit.heat && copy.coolSetpoint == edit.cool
+                if confirmed || Self.isExpired(edit.sentAt) {
+                    setpointEdits[thermostat.id] = nil
+                } else {
+                    copy.applyHeldSetpoints(heat: edit.heat, cool: edit.cool, until: edit.hold)
+                }
+            }
             return copy
         }
+    }
+
+    /// Carrier normally reports a change within seconds. After this long, trust what it reports.
+    private static func isExpired(_ sentAt: Date?) -> Bool {
+        sentAt.map { Date().timeIntervalSince($0) > 90 } ?? false
     }
 
     // MARK: - Background updates
@@ -325,7 +433,7 @@ final class ThermostatStore {
                 matched = true
             }
             if matched {
-                thermostats = withSetpointEdits(updated)
+                thermostats = withPendingEdits(updated)
                 lastUpdated = Date()
             } else {
                 scheduleRefresh()
@@ -354,6 +462,16 @@ final class ThermostatStore {
             guard self.phase == .signedIn else { return }
             self.startBackgroundUpdates()
             await self.refresh()
+        }
+    }
+}
+
+private extension Thermostat {
+    mutating func apply(_ edit: ThermostatStore.HoldEdit) {
+        if let profileID = edit.profileID {
+            applyHold(of: profileID, until: edit.hold)
+        } else {
+            applyResume()
         }
     }
 }
