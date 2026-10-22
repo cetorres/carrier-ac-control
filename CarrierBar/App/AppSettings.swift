@@ -52,8 +52,8 @@ enum AboutInfo {
     static let supportURL = URL(string: "https://buymeacoffee.com/cetorres")!
     static let contactURL = URL(string: "https://cetorres.com/contact?subject=CarrierBar%20support")!
     static let appInfo = "Shows the temperature of each Carrier unit on your account in the menu bar, and lets you change its temperature, mode, fan, and comfort profile from there."
-    static let disclaimer = "CarrierBar is an independent project. It is not affiliated with, endorsed by, or supported by Carrier."
-    static let copyrightHolder = "Cacira, Inc."
+    static let disclaimer = "CarrierBar is an independent project, not affiliated with or supported by Carrier."
+    static let copyrightHolder = "Carlos E. Torres"
 
     /// Prefers the display name, which is how the app is written everywhere else.
     static var name: String {

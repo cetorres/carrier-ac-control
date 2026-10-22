@@ -14,7 +14,11 @@ A macOS menu bar app that shows the current temperature of each Carrier unit on 
 - Xcode 16 or later (the project uses synchronized folders, a project format introduced in Xcode 16)
 - The Carrier account you use in the Carrier SmartHome app
 
-## Run it
+## Download notarized build
+If you don't want to build the app locally, you can download the latest notarized release build and simply run and use it on your macOS.
+-  Download in [Releases](https://github.com/cetorres/carrier-ac-control/releases).
+
+## Build and run locally
 
 1. Open `CarrierBar.xcodeproj`.
 2. Optional: to sign with your own Apple developer team, create `Config/Signing.local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>`, and if you like `PRODUCT_BUNDLE_IDENTIFIER = <your bundle ID>`. Git ignores this file. Without it the app signs to run locally, and macOS asks you to allow Keychain access again after each rebuild, because the ad hoc signature changes every time. Set signing this way rather than in the Signing & Capabilities tab, which writes your team ID into the shared project file.
