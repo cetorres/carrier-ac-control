@@ -24,9 +24,21 @@ enum RealtimeEvent: Sendable {
         let messageType = message["messageType"] as? String
         if messageType == "Heartbeat" { return nil }
 
-        guard let rawDevice = message["deviceId"] else { return nil }
+        // Smart Thermostats send {"serial": ..., "name": "zones", "value": {...}} with no deviceId.
+        guard let rawDevice = message["deviceId"] ?? message["serial"] else { return nil }
         let serial = "\(rawDevice)"
         guard !serial.isEmpty else { return nil }
+
+        if messageType == nil, message["name"] as? String == "zones",
+           let zones = message["value"] as? [String: Any] {
+            let changedFields = zones.values
+                .compactMap { $0 as? [String: Any] }
+                .flatMap(\.keys)
+            // Some fields change every minute or several times per equipment cycle. Don't refetch for those alone.
+            if !changedFields.isEmpty, changedFields.allSatisfy(ignoredZoneFields.contains) {
+                return nil
+            }
+        }
 
         switch messageType {
         case "InfinityStatus"?:
@@ -41,6 +53,10 @@ enum RealtimeEvent: Sendable {
             return .changed(serial: serial)
         }
     }
+
+    /// Smart Thermostat zone fields that change often but don't need a refetch.
+    /// `hold_countdown` ticks down every minute. The hold's end time is already worked out from it on fetch.
+    private static let ignoredZoneFields: Set<String> = ["relay_state", "mot_indication_enabled", "hold_countdown"]
 }
 
 /// Listens to Carrier's realtime websocket and reconnects with backoff when it drops.
